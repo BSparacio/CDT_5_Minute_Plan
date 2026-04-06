@@ -71,7 +71,7 @@ function Set-RegValue {
             Write-Success "Set $Name = $Value at $Path"
         }
     } catch {
-        Write-Fail "Could not set $Name at $Path — $_"
+        Write-Fail "Could not set $Name at $Path - $_"
     }
 }
 
@@ -89,13 +89,13 @@ if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
 }
 Write-Success "Running as Administrator."
 
-# Verify GREYTEAM user exists and document it — we will NEVER touch it
+# Verify GREYTEAM user exists and document it - we will NEVER touch it
 Write-Step "Verifying GREYTEAM account is present and will not be modified..."
 $greyTeamUser = Get-LocalUser -Name "GREYTEAM" -ErrorAction SilentlyContinue
 if ($greyTeamUser) {
     Write-Success "GREYTEAM account found. Status: $($greyTeamUser.Enabled). This account will NOT be modified."
 } else {
-    Write-Warn "GREYTEAM account not found locally. It may be a domain account. Proceeding — this script does NOT touch user accounts."
+    Write-Warn "GREYTEAM account not found locally. It may be a domain account. Proceeding - this script does NOT touch user accounts."
 }
 
 # Snapshot current SMB config for reference
@@ -189,7 +189,7 @@ try {
 #       an attacker on the network can intercept NTLM auth and relay it to
 #       your server to authenticate as the victim. Signing cryptographically
 #       binds authentication to the session, breaking the relay chain.
-#       This is safe for scoring — all modern SMB clients support signing.
+#       This is safe for scoring - all modern SMB clients support signing.
 # ============================================================
 
 Write-Banner "SECTION 2: SMB PACKET SIGNING (CIS 2.3.8.1 / 2.3.8.2 / 2.3.9.2 / 2.3.9.3)"
@@ -322,10 +322,10 @@ Set-RegValue `
 #                 2.3.10.12 (No shares accessible anonymously)
 #
 #  WHY: Null session enumeration lets attackers unauthenticated list users,
-#       shares, and group memberships. In a CTF, this is reconnaissance gold —
+#       shares, and group memberships. In a CTF, this is reconnaissance gold -
 #       red team can map every account and share without a single credential.
 #       These settings require authentication before any information is revealed.
-#       NOTE: Port 445 stays OPEN — only anonymous/unauthenticated access is blocked.
+#       NOTE: Port 445 stays OPEN - only anonymous/unauthenticated access is blocked.
 #       GREYTEAM authenticates, so scoring is unaffected.
 # ============================================================
 
@@ -390,28 +390,28 @@ Set-RegValue `
 #                 18.4.1 (Apply UAC restrictions to local accounts on network logons)
 #
 #  WHY: The red team almost certainly has Mimikatz or a similar tool pre-baked
-#       on the system. WDigest stores plaintext credentials in memory — disabling
+#       on the system. WDigest stores plaintext credentials in memory - disabling
 #       it means Mimikatz cannot dump cleartext passwords via sekurlsa::wdigest.
 #       LSA Protection (RunAsPPL) prevents non-protected processes from injecting
 #       into LSASS to dump credentials. This directly counters pre-staged tools.
 #       UAC restrictions on network logons prevent local admin pass-the-hash.
 # ============================================================
 
-Write-Banner "SECTION 5: CREDENTIAL PROTECTION — ANTI-MIMIKATZ (CIS 18.4.x)"
+Write-Banner "SECTION 5: CREDENTIAL PROTECTION - ANTI-MIMIKATZ (CIS 18.4.x)"
 
 Write-Step "Disabling WDigest authentication to prevent cleartext password caching (CIS 18.4.8)..."
 Set-RegValue `
     -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest" `
     -Name "UseLogonCredential" `
     -Value 0 `
-    -Description "WDigest disabled — Mimikatz cannot dump cleartext passwords (CIS 18.4.8)"
+    -Description "WDigest disabled - Mimikatz cannot dump cleartext passwords (CIS 18.4.8)"
 
 Write-Step "Enabling LSA Protection (RunAsPPL) to protect LSASS from injection (CIS 18.4.6)..."
 Set-RegValue `
     -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
     -Name "RunAsPPL" `
     -Value 1 `
-    -Description "LSA Protection (RunAsPPL) enabled — LSASS protected from injection (CIS 18.4.6)"
+    -Description "LSA Protection (RunAsPPL) enabled - LSASS protected from injection (CIS 18.4.6)"
 
 # Also set the new RunAsPPLBoot value for Secure Boot enforced PPL
 Set-RegValue `
@@ -435,14 +435,14 @@ try {
         Set-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders" -Name "SecurityProviders" -Value $newProviders
         Write-Success "WDigest removed from SecurityProviders list."
     } else {
-        Write-Info "WDigest not present in SecurityProviders list — already clean."
+        Write-Info "WDigest not present in SecurityProviders list - already clean."
     }
 } catch {
     Write-Warn "Could not modify SecurityProviders list: $_"
 }
 
 # ============================================================
-#  SECTION 6: ANTI-RELAY — DISABLE LLMNR AND NETBIOS
+#  SECTION 6: ANTI-RELAY - DISABLE LLMNR AND NETBIOS
 #
 #  WHY: LLMNR (Link-Local Multicast Name Resolution) and NetBIOS name
 #       resolution are the primary mechanisms attackers use to intercept
@@ -454,23 +454,23 @@ try {
 #       name resolution protocols that feed credential theft.
 # ============================================================
 
-Write-Banner "SECTION 6: ANTI-RELAY — DISABLE LLMNR AND NETBIOS NAME POISONING"
+Write-Banner "SECTION 6: ANTI-RELAY - DISABLE LLMNR AND NETBIOS NAME POISONING"
 
 Write-Step "Disabling LLMNR (Link-Local Multicast Name Resolution) via registry..."
 Set-RegValue `
     -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient" `
     -Name "EnableMulticast" `
     -Value 0 `
-    -Description "LLMNR disabled — prevents Responder-based credential capture"
+    -Description "LLMNR disabled - prevents Responder-based credential capture"
 
 Write-Step "Disabling NetBIOS name release on demand (CIS 18.5.6)..."
 Set-RegValue `
     -Path "HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters" `
     -Name "NoNameReleaseOnDemand" `
     -Value 1 `
-    -Description "NetBIOS will not release name on demand — prevents name hijacking (CIS 18.5.6)"
+    -Description "NetBIOS will not release name on demand - prevents name hijacking (CIS 18.5.6)"
 
-Write-Step "Setting NetBT NodeType to P-node (CIS 18.4.7) — use only WINS, not broadcast..."
+Write-Step "Setting NetBT NodeType to P-node (CIS 18.4.7) - use only WINS, not broadcast..."
 # P-node (value 2) = use point-to-point name query, no broadcast
 Set-RegValue `
     -Path "HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters" `
@@ -483,13 +483,13 @@ Set-RegValue `
     -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" `
     -Name "DisableIPSourceRouting" `
     -Value 2 `
-    -Description "IPv4 source routing disabled — highest protection (CIS 18.5.3)"
+    -Description "IPv4 source routing disabled - highest protection (CIS 18.5.3)"
 
 Set-RegValue `
     -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters" `
     -Name "DisableIPSourceRouting" `
     -Value 2 `
-    -Description "IPv6 source routing disabled — highest protection (CIS 18.5.2)"
+    -Description "IPv6 source routing disabled - highest protection (CIS 18.5.2)"
 
 Write-Step "Disabling ICMP redirect override of routing (CIS 18.5.4)..."
 Set-RegValue `
@@ -508,7 +508,7 @@ Set-RegValue `
 #       especially if they know the GREYTEAM account name. Account lockout
 #       limits the number of guesses they can make per time window.
 #       NOTE: We set a threshold of 5 attempts. This will NOT lock the
-#       GREYTEAM account out if the grey team connects normally — it only
+#       GREYTEAM account out if the grey team connects normally - it only
 #       locks accounts after 5 incorrect password attempts.
 #       IMPORTANT: This applies to ALL accounts EXCEPT the built-in Administrator
 #       if 'Allow Administrator account lockout' is not enabled.
@@ -534,7 +534,7 @@ try {
 }
 
 # ============================================================
-#  SECTION 8: AUDIT POLICY — VISIBILITY INTO ATTACKS
+#  SECTION 8: AUDIT POLICY - VISIBILITY INTO ATTACKS
 #  CIS Benchmark: Section 17 (Advanced Audit Policy Configuration)
 #                 17.1.1 (Audit Credential Validation - S&F)
 #                 17.2.5 (Audit Security Group Management - Success)
@@ -598,7 +598,7 @@ foreach ($setting in $auditSettings) {
 Write-Step "Enabling SMB-specific server audit events..."
 try {
     Set-SmbServerConfiguration -AuditSmb1Access $true -Force
-    Write-Success "SMBv1 access auditing enabled — any SMBv1 attempt will be logged."
+    Write-Success "SMBv1 access auditing enabled - any SMBv1 attempt will be logged."
 } catch {
     Write-Warn "Could not enable SMBv1 audit: $_"
 }
@@ -607,13 +607,13 @@ try {
 Write-Step "Enabling SMB Server operational audit log..."
 try {
     wevtutil set-log "Microsoft-Windows-SMBServer/Audit" /enabled:true /quiet:true
-    Write-Success "SMBServer Audit log enabled — Event IDs 3021, 3024-3026 will fire on non-compliant clients."
+    Write-Success "SMBServer Audit log enabled - Event IDs 3021, 3024-3026 will fire on non-compliant clients."
 } catch {
     Write-Warn "Could not enable SMBServer Audit log via wevtutil: $_"
 }
 
 # ============================================================
-#  SECTION 9: FIREWALL HARDENING — LOGGING + ENABLE
+#  SECTION 9: FIREWALL HARDENING - LOGGING + ENABLE
 #  CIS Benchmark: 9.1.x / 9.2.x / 9.3.x (Windows Firewall profiles)
 #
 #  WHY: We must NOT block port 445 per competition rules, so we will NOT
@@ -624,7 +624,7 @@ try {
 #       The firewall must remain permissive on 445 for GREYTEAM scoring.
 # ============================================================
 
-Write-Banner "SECTION 9: WINDOWS FIREWALL HARDENING (CIS 9.x) — PORT 445 STAYS OPEN"
+Write-Banner "SECTION 9: WINDOWS FIREWALL HARDENING (CIS 9.x) - PORT 445 STAYS OPEN"
 
 Write-Step "Ensuring Windows Firewall is ON for all profiles (CIS 9.1.1 / 9.2.1 / 9.3.1)..."
 try {
@@ -658,7 +658,7 @@ foreach ($fp in $firewallProfiles) {
     }
 }
 
-Write-Step "NOTE: Port 445 inbound is NOT being blocked — required for GREYTEAM scoring."
+Write-Step "NOTE: Port 445 inbound is NOT being blocked - required for GREYTEAM scoring."
 Write-Info "SMB traffic on port 445 will remain fully open per competition rules."
 
 Write-Step "Blocking common red-team C2 and lateral movement ports (NOT 445)..."
@@ -697,7 +697,7 @@ foreach ($rule in $blockRules) {
             }
             Write-Success "Firewall rule added: $($rule.Desc) (port $($rule.Port))"
         } else {
-            Write-Info "Rule '$($rule.Name)' already exists — skipping."
+            Write-Info "Rule '$($rule.Name)' already exists - skipping."
         }
     } catch {
         Write-Warn "Could not add firewall rule '$($rule.Name)': $_"
@@ -710,15 +710,15 @@ foreach ($rule in $blockRules) {
 #       pre-bake tools into the system. This section hunts for common
 #       persistence mechanisms: scheduled tasks, suspicious services,
 #       startup registry keys, and autorun locations. It does NOT auto-
-#       delete anything — it reports findings for your manual review.
+#       delete anything - it reports findings for your manual review.
 #       Automatic deletion could break scoring if grey team uses similar
 #       mechanisms for uptime checks.
 # ============================================================
 
-Write-Banner "SECTION 10: RED TEAM PERSISTENCE HUNTING (REVIEW ONLY — NO AUTO-DELETE)"
+Write-Banner "SECTION 10: RED TEAM PERSISTENCE HUNTING (REVIEW ONLY - NO AUTO-DELETE)"
 
 Write-Step "Scanning scheduled tasks for suspicious entries..."
-Write-Warn "Review the following tasks carefully — anything not from Microsoft may be red team persistence:"
+Write-Warn "Review the following tasks carefully - anything not from Microsoft may be red team persistence:"
 try {
     Get-ScheduledTask | Where-Object {
         $_.TaskPath -notlike "\Microsoft\*" -and
@@ -729,7 +729,7 @@ try {
 }
 
 Write-Step "Scanning for non-Microsoft services (potential backdoors or C2 agents)..."
-Write-Warn "Review these services — focus on those with unusual paths or names:"
+Write-Warn "Review these services - focus on those with unusual paths or names:"
 try {
     Get-WmiObject Win32_Service | Where-Object {
         $_.PathName -notlike "*\Windows\*" -and
@@ -800,7 +800,7 @@ try {
 #  SECTION 11: DISABLE DANGEROUS SERVICES
 #  WHY: Several Windows services are commonly abused by red teams for
 #       lateral movement and credential theft. The Print Spooler is
-#       particularly notorious — it's the vector for PrinterBug/SpoolSample
+#       particularly notorious - it's the vector for PrinterBug/SpoolSample
 #       which forces NTLM authentication coercion (triggering relay attacks).
 #       These services have no scoring relevance on an SMB file server.
 # ============================================================
@@ -809,10 +809,10 @@ Write-Banner "SECTION 11: DISABLING HIGH-RISK SERVICES"
 
 $dangerousServices = @(
     @{ Name = "Spooler";     DisplayName = "Print Spooler";          Reason = "PrinterBug/SpoolSample NTLM coercion vector for relay attacks" }
-    @{ Name = "WebClient";   DisplayName = "WebDAV Client";          Reason = "WebDAV NTLM auth coercion — PetitPotam and related attacks" }
-    @{ Name = "RemoteRegistry"; DisplayName = "Remote Registry";     Reason = "Allows remote registry reads — red team enumeration" }
-    @{ Name = "WinRM";       DisplayName = "Windows Remote Mgmt";    Reason = "Remote PowerShell execution — lateral movement if compromised" }
-    @{ Name = "TlntSvr";     DisplayName = "Telnet";                 Reason = "Cleartext protocol — red team pivot tool" }
+    @{ Name = "WebClient";   DisplayName = "WebDAV Client";          Reason = "WebDAV NTLM auth coercion - PetitPotam and related attacks" }
+    @{ Name = "RemoteRegistry"; DisplayName = "Remote Registry";     Reason = "Allows remote registry reads - red team enumeration" }
+    @{ Name = "WinRM";       DisplayName = "Windows Remote Mgmt";    Reason = "Remote PowerShell execution - lateral movement if compromised" }
+    @{ Name = "TlntSvr";     DisplayName = "Telnet";                 Reason = "Cleartext protocol - red team pivot tool" }
 )
 
 foreach ($svc in $dangerousServices) {
@@ -823,7 +823,7 @@ foreach ($svc in $dangerousServices) {
                 Stop-Service -Name $svc.Name -Force -ErrorAction SilentlyContinue
             }
             Set-Service -Name $svc.Name -StartupType Disabled -ErrorAction SilentlyContinue
-            Write-Success "Disabled: $($svc.DisplayName) — Reason: $($svc.Reason)"
+            Write-Success "Disabled: $($svc.DisplayName) - Reason: $($svc.Reason)"
         } else {
             Write-Info "$($svc.DisplayName) service not found or already disabled."
         }
@@ -858,7 +858,7 @@ Set-RegValue `
     -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel" `
     -Name "DisableExceptionChainValidation" `
     -Value 0 `
-    -Description "SEHOP enabled — protects against SEH overwrite exploits (CIS 18.4.5)"
+    -Description "SEHOP enabled - protects against SEH overwrite exploits (CIS 18.4.5)"
 
 Write-Step "Disabling Automatic Logon (CIS 18.5.1)..."
 Set-RegValue `
@@ -879,7 +879,7 @@ Set-RegValue `
     -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer" `
     -Name "NoAutorun" `
     -Value 1 `
-    -Description "AutoRun disabled — no autorun.inf execution (CIS 18.10.8.2)"
+    -Description "AutoRun disabled - no autorun.inf execution (CIS 18.10.8.2)"
 
 Write-Step "Preventing system shutdown without logon (CIS 2.3.13.1)..."
 Set-RegValue `
@@ -908,14 +908,14 @@ Set-RegValue `
     -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
     -Name "SmbServerNameHardeningLevel" `
     -Value 1 `
-    -Description "SPN validation: Accept if provided (CIS 2.3.9.5) — helps mitigate CVE-2025-58726"
+    -Description "SPN validation: Accept if provided (CIS 2.3.9.5) - helps mitigate CVE-2025-58726"
 
 Write-Step "Disabling Safe DLL search mode bypass (CIS 18.5.8)..."
 Set-RegValue `
     -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" `
     -Name "SafeDllSearchMode" `
     -Value 1 `
-    -Description "Safe DLL search mode enabled — prevents DLL hijacking (CIS 18.5.8)"
+    -Description "Safe DLL search mode enabled - prevents DLL hijacking (CIS 18.5.8)"
 
 # ============================================================
 #  SECTION 13: GREYTEAM ACCESS VERIFICATION
@@ -931,7 +931,7 @@ $greyTeamFinal = Get-LocalUser -Name "GREYTEAM" -ErrorAction SilentlyContinue
 if ($greyTeamFinal) {
     Write-Success "GREYTEAM account exists. Enabled: $($greyTeamFinal.Enabled). UNTOUCHED."
 } else {
-    Write-Warn "GREYTEAM not found as a local user — may be domain account. Verify manually."
+    Write-Warn "GREYTEAM not found as a local user - may be domain account. Verify manually."
 }
 
 Write-Step "Verifying all SMB shares are still present and accessible..."
@@ -944,7 +944,7 @@ $finalConfig = Get-SmbServerConfiguration
 if ($finalConfig.EnableSMB2Protocol) {
     Write-Success "SMBv2/v3 is ENABLED. Scoring connections on port 445 will work."
 } else {
-    Write-Fail "SMBv2 appears DISABLED — this will break scoring! Investigate immediately."
+    Write-Fail "SMBv2 appears DISABLED - this will break scoring! Investigate immediately."
 }
 
 Write-Step "Verifying port 445 is listening..."
@@ -1001,27 +1001,27 @@ Write-Host @"
 #  COMPLETION SUMMARY
 # ============================================================
 
-Write-Banner "HARDENING COMPLETE — SUMMARY"
+Write-Banner "HARDENING COMPLETE - SUMMARY"
 
 Write-Host @"
 
   The following hardening measures have been applied based on
   CIS Microsoft Windows Server 2019 Benchmark v4.0.0:
 
-  [1]  SMBv1 DISABLED        — EternalBlue (MS17-010) is blocked
-  [2]  SMB SIGNING REQUIRED  — NTLM relay attacks are broken
-  [3]  NTLMv2 ONLY           — LM/NTLM hash cracking difficulty raised
-  [4]  LM HASH STORAGE OFF   — Mimikatz SAM dump yields no LM hashes
-  [5]  LSA PROTECTION ON     — LSASS injection (Mimikatz) blocked
-  [6]  WDIGEST DISABLED      — No cleartext passwords in memory
-  [7]  LLMNR DISABLED        — Responder credential capture broken
-  [8]  NULL SESSIONS BLOCKED — No anonymous SMB enumeration
-  [9]  ACCOUNT LOCKOUT SET   — Brute force limited to 5 attempts
-  [10] FULL AUDIT LOGGING    — All auth/file/process events logged
-  [11] FIREWALL HARDENED     — Logging on, C2 ports blocked
-  [12] RISKY SERVICES KILLED — Spooler, WinRM, RemoteRegistry off
-  [13] PERSISTENCE SCANNED   — Review output above for red team artifacts
-  [14] GREYTEAM VERIFIED     — Account intact, port 445 open, SMBv2 active
+  [1]  SMBv1 DISABLED        - EternalBlue (MS17-010) is blocked
+  [2]  SMB SIGNING REQUIRED  - NTLM relay attacks are broken
+  [3]  NTLMv2 ONLY           - LM/NTLM hash cracking difficulty raised
+  [4]  LM HASH STORAGE OFF   - Mimikatz SAM dump yields no LM hashes
+  [5]  LSA PROTECTION ON     - LSASS injection (Mimikatz) blocked
+  [6]  WDIGEST DISABLED      - No cleartext passwords in memory
+  [7]  LLMNR DISABLED        - Responder credential capture broken
+  [8]  NULL SESSIONS BLOCKED - No anonymous SMB enumeration
+  [9]  ACCOUNT LOCKOUT SET   - Brute force limited to 5 attempts
+  [10] FULL AUDIT LOGGING    - All auth/file/process events logged
+  [11] FIREWALL HARDENED     - Logging on, C2 ports blocked
+  [12] RISKY SERVICES KILLED - Spooler, WinRM, RemoteRegistry off
+  [13] PERSISTENCE SCANNED   - Review output above for red team artifacts
+  [14] GREYTEAM VERIFIED     - Account intact, port 445 open, SMBv2 active
 
   GREYTEAM account: NOT MODIFIED
   Port 445:         OPEN (scoring traffic will flow)
