@@ -100,12 +100,17 @@ if ($greyTeamUser) {
 
 # Snapshot current SMB config for reference
 Write-Step "Snapshotting current SMB configuration for reference..."
-$smbConfig = Get-SmbServerConfiguration
-Write-Info "SMBv1 currently enabled: $($smbConfig.EnableSMB1Protocol)"
-Write-Info "SMBv2 currently enabled: $($smbConfig.EnableSMB2Protocol)"
-Write-Info "Signing required: $($smbConfig.RequireSecuritySignature)"
-Write-Info "Signing enabled: $($smbConfig.EnableSecuritySignature)"
-Write-Info "Encrypt data: $($smbConfig.EncryptData)"
+$lanmanParams = "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters"
+$smb1Val     = (Get-ItemProperty -Path $lanmanParams -Name "SMB1" -ErrorAction SilentlyContinue).SMB1
+$smb2Val     = (Get-ItemProperty -Path $lanmanParams -Name "SMB2" -ErrorAction SilentlyContinue).SMB2
+$reqSign     = (Get-ItemProperty -Path $lanmanParams -Name "RequireSecuritySignature" -ErrorAction SilentlyContinue).RequireSecuritySignature
+$enaSign     = (Get-ItemProperty -Path $lanmanParams -Name "EnableSecuritySignature" -ErrorAction SilentlyContinue).EnableSecuritySignature
+$encrypt     = (Get-ItemProperty -Path $lanmanParams -Name "EncryptData" -ErrorAction SilentlyContinue).EncryptData
+Write-Info "SMBv1 currently enabled: $(if ($smb1Val -eq 0) { 'False' } else { 'True (or unset)' })"
+Write-Info "SMBv2 currently enabled: $(if ($smb2Val -eq 0) { 'False' } else { 'True (or unset)' })"
+Write-Info "Signing required: $(if ($reqSign -eq 1) { 'True' } else { 'False' })"
+Write-Info "Signing enabled:  $(if ($enaSign -eq 1) { 'True' } else { 'False' })"
+Write-Info "Encrypt data:     $(if ($encrypt -eq 1) { 'True' } else { 'False' })"
 
 Write-Step "Current SMB Shares (document these - they must remain intact):"
 Get-SmbShare | Format-Table Name, Path, Description -AutoSize | Out-String | Write-Host
@@ -132,12 +137,12 @@ if ($sessions) {
 Write-Banner "SECTION 1: DISABLE SMBv1 (CIS 18.4.2 / 18.4.3)"
 
 Write-Step "Disabling SMBv1 via SmbServerConfiguration..."
-try {
-    Set-SmbServerConfiguration -EnableSMB1Protocol $false -Force
-    Write-Success "SMBv1 server protocol disabled via Set-SmbServerConfiguration."
-} catch {
-    Write-Fail "Could not disable SMBv1 via SmbServerConfiguration: $_"
-}
+Set-RegValue `
+    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
+    -Name "SMB1" `
+    -Value 0 `
+    -Type DWord `
+    -Description "SMBv1 server disabled via registry (primary)"
 
 Write-Step "Disabling SMBv1 via registry (CIS 18.4.3 - SMB v1 server)..."
 Set-RegValue `
@@ -169,13 +174,13 @@ try {
 }
 
 # Verify SMBv2 remains ON (critical for scoring)
-Write-Step "Verifying SMBv2/v3 remains ENABLED (required for scoring)..."
-try {
-    Set-SmbServerConfiguration -EnableSMB2Protocol $true -Force
-    Write-Success "SMBv2/v3 confirmed ENABLED. Scoring traffic will continue to work."
-} catch {
-    Write-Fail "Could not confirm SMBv2 state: $_"
-}
+Write-Step "Ensuring SMBv2/v3 remains ENABLED (required for scoring)..."
+Set-RegValue `
+    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
+    -Name "SMB2" `
+    -Value 1 `
+    -Type DWord `
+    -Description "SMBv2/v3 explicitly enabled via registry - scoring traffic protected"
 
 # ============================================================
 #  SECTION 2: SMB SIGNING (PACKET SIGNING)
@@ -194,16 +199,19 @@ try {
 
 Write-Banner "SECTION 2: SMB PACKET SIGNING (CIS 2.3.8.1 / 2.3.8.2 / 2.3.9.2 / 2.3.9.3)"
 
-Write-Step "Enabling SMB signing via SmbServerConfiguration..."
-try {
-    Set-SmbServerConfiguration `
-        -RequireSecuritySignature $true `
-        -EnableSecuritySignature $true `
-        -Force
-    Write-Success "SMB server signing: RequireSecuritySignature=True, EnableSecuritySignature=True"
-} catch {
-    Write-Fail "Could not set SMB signing via SmbServerConfiguration: $_"
-}
+Write-Step "Enabling SMB signing via registry (bypassing unreliable cmdlet)..."
+Set-RegValue `
+    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
+    -Name "RequireSecuritySignature" `
+    -Value 1 `
+    -Type DWord `
+    -Description "SMB server: RequireSecuritySignature enabled directly via registry"
+Set-RegValue `
+    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
+    -Name "EnableSecuritySignature" `
+    -Value 1 `
+    -Type DWord `
+    -Description "SMB server: EnableSecuritySignature enabled directly via registry"
 
 Write-Step "Enforcing SMB server signing via registry (CIS 2.3.9.2 / 2.3.9.3)..."
 Set-RegValue `
@@ -596,12 +604,12 @@ foreach ($setting in $auditSettings) {
 }
 
 Write-Step "Enabling SMB-specific server audit events..."
-try {
-    Set-SmbServerConfiguration -AuditSmb1Access $true -Force
-    Write-Success "SMBv1 access auditing enabled - any SMBv1 attempt will be logged."
-} catch {
-    Write-Warn "Could not enable SMBv1 audit: $_"
-}
+Set-RegValue `
+    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
+    -Name "AuditSmb1Access" `
+    -Value 1 `
+    -Type DWord `
+    -Description "SMBv1 access auditing enabled via registry - any SMBv1 attempt will be logged"
 
 # Enable SMB server audit log
 Write-Step "Enabling SMB Server operational audit log..."
