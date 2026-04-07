@@ -33,13 +33,23 @@ function Write-Step {
 }
 
 function Write-Success {
-    param([string]$Text)
+    param(
+        [string]$Text,
+        [string]$Section = "",
+        [string]$Description = ""
+    )
     Write-Host "    [+] $Text" -ForegroundColor Green
+    if ($Section) { Add-Result -Section $Section -Description $Description -Status "PASS" -Detail $Text }
 }
 
 function Write-Warn {
-    param([string]$Text)
+    param(
+        [string]$Text,
+        [string]$Section = "",
+        [string]$Description = ""
+    )
     Write-Host "    [!] $Text" -ForegroundColor Magenta
+    if ($Section) { Add-Result -Section $Section -Description $Description -Status "WARN" -Detail $Text }
 }
 
 function Write-Info {
@@ -48,8 +58,13 @@ function Write-Info {
 }
 
 function Write-Fail {
-    param([string]$Text)
+    param(
+        [string]$Text,
+        [string]$Section = "",
+        [string]$Description = ""
+    )
     Write-Host "    [X] FAILED: $Text" -ForegroundColor Red
+    if ($Section) { Add-Result -Section $Section -Description $Description -Status "FAIL" -Detail $Text }
 }
 
 function Set-RegValue {
@@ -76,6 +91,27 @@ function Set-RegValue {
 }
 
 # ============================================================
+#  RESULT TRACKING
+# ============================================================
+$script:Results = [System.Collections.Generic.List[PSCustomObject]]::new()
+
+function Add-Result {
+    param(
+        [string]$Section,
+        [string]$Description,
+        [ValidateSet("PASS","FAIL","WARN","SKIP")]
+        [string]$Status,
+        [string]$Detail = ""
+    )
+    $script:Results.Add([PSCustomObject]@{
+        Section     = $Section
+        Description = $Description
+        Status      = $Status
+        Detail      = $Detail
+    })
+}
+
+# ============================================================
 #  PRE-FLIGHT CHECKS
 # ============================================================
 
@@ -93,9 +129,11 @@ Write-Success "Running as Administrator."
 Write-Step "Verifying GREYTEAM account is present and will not be modified..."
 $greyTeamUser = Get-LocalUser -Name "GREYTEAM" -ErrorAction SilentlyContinue
 if ($greyTeamUser) {
-    Write-Success "GREYTEAM account found. Status: $($greyTeamUser.Enabled). This account will NOT be modified."
+    Write-Success "GREYTEAM account found. Status: $($greyTeamUser.Enabled). This account will NOT be modified." `
+        -Section "Pre-Flight" -Description "GREYTEAM account present"
 } else {
-    Write-Warn "GREYTEAM account not found locally. It may be a domain account. Proceeding - this script does NOT touch user accounts."
+    Write-Warn "GREYTEAM not found as a local user - may be domain account. Verify manually." `
+        -Section "Pre-Flight" -Description "GREYTEAM account present"
 }
 
 # Snapshot current SMB config for reference
@@ -136,29 +174,33 @@ if ($sessions) {
 
 Write-Banner "SECTION 1: DISABLE SMBv1 (CIS 18.4.2 / 18.4.3)"
 
-Write-Step "Disabling SMBv1 via SmbServerConfiguration..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
-    -Name "SMB1" `
-    -Value 0 `
-    -Type DWord `
-    -Description "SMBv1 server disabled via registry (primary)"
-
 Write-Step "Disabling SMBv1 via registry (CIS 18.4.3 - SMB v1 server)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
-    -Name "SMB1" `
-    -Value 0 `
-    -Type DWord `
-    -Description "SMBv1 server disabled via registry (CIS 18.4.3)"
+try {
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
+        -Name "SMB1" -Value 0 -Type DWord `
+        -Description "SMBv1 server disabled via registry (CIS 18.4.3)"
+    Add-Result -Section "SMBv1" -Description "SMBv1 server disabled" `
+        -Status "PASS" -Detail "LanmanServer SMB1 registry key set to 0"
+} catch {
+    Add-Result -Section "SMBv1" -Description "SMBv1 server disabled" `
+        -Status "FAIL" -Detail $_
+}
 
 Write-Step "Disabling SMBv1 client driver (CIS 18.4.2)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\mrxsmb10" `
-    -Name "Start" `
-    -Value 4 `
-    -Type DWord `
-    -Description "SMBv1 client driver (mrxsmb10) set to Disabled (Start=4) (CIS 18.4.2)"
+try {
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Services\mrxsmb10" `
+        -Name "Start" `
+        -Value 4 `
+        -Type DWord `
+        -Description "SMBv1 client driver (mrxsmb10) set to Disabled (Start=4) (CIS 18.4.2)"
+    Add-Result -Section "SMBv1" -Description "SMBv1 client driver disabled" `
+        -Status "PASS" -Detail "mrxsmb10 Start value set to 4 (Disabled)"
+} catch {
+    Add-Result -Section "SMBv1" -Description "SMBv1 client driver disabled" `
+        -Status "FAIL" -Detail $_
+}
 
 Write-Step "Disabling SMBv1 via Windows Optional Feature (most permanent method)..."
 try {
@@ -166,21 +208,34 @@ try {
     if ($feature -and $feature.State -eq "Enabled") {
         Disable-WindowsOptionalFeature -Online -FeatureName "SMB1Protocol" -NoRestart | Out-Null
         Write-Success "SMB1Protocol Windows Feature disabled. A reboot is recommended but not required now."
+        Add-Result -Section "SMBv1" -Description "SMBv1 Windows Feature disabled" `
+            -Status "WARN" -Detail "Feature was enabled and has been disabled - reboot recommended to fully apply"
     } else {
         Write-Success "SMB1Protocol Windows Feature is already disabled."
+        Add-Result -Section "SMBv1" -Description "SMBv1 Windows Feature disabled" `
+            -Status "PASS" -Detail "Feature was already in disabled state"
     }
 } catch {
     Write-Warn "Could not modify SMB1Protocol Windows Feature (may require DISM or reboot): $_"
+    Add-Result -Section "SMBv1" -Description "SMBv1 Windows Feature disabled" `
+        -Status "WARN" -Detail "Could not modify via Optional Features - registry method still applied"
 }
 
-# Verify SMBv2 remains ON (critical for scoring)
+# Ensure SMBv2 remains ON (critical for scoring)
 Write-Step "Ensuring SMBv2/v3 remains ENABLED (required for scoring)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
-    -Name "SMB2" `
-    -Value 1 `
-    -Type DWord `
-    -Description "SMBv2/v3 explicitly enabled via registry - scoring traffic protected"
+try {
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
+        -Name "SMB2" `
+        -Value 1 `
+        -Type DWord `
+        -Description "SMBv2/v3 explicitly enabled via registry - scoring traffic protected"
+    Add-Result -Section "Verification" -Description "SMBv2 active for scoring" `
+        -Status "PASS" -Detail "LanmanServer SMB2 registry key set to 1 - port 445 scoring traffic protected"
+} catch {
+    Add-Result -Section "Verification" -Description "SMBv2 active for scoring" `
+        -Status "FAIL" -Detail $_
+}
 
 # ============================================================
 #  SECTION 2: SMB SIGNING (PACKET SIGNING)
@@ -199,52 +254,52 @@ Set-RegValue `
 
 Write-Banner "SECTION 2: SMB PACKET SIGNING (CIS 2.3.8.1 / 2.3.8.2 / 2.3.9.2 / 2.3.9.3)"
 
-Write-Step "Enabling SMB signing via registry (bypassing unreliable cmdlet)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
-    -Name "RequireSecuritySignature" `
-    -Value 1 `
-    -Type DWord `
-    -Description "SMB server: RequireSecuritySignature enabled directly via registry"
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
-    -Name "EnableSecuritySignature" `
-    -Value 1 `
-    -Type DWord `
-    -Description "SMB server: EnableSecuritySignature enabled directly via registry"
-
-Write-Step "Enforcing SMB server signing via registry (CIS 2.3.9.2 / 2.3.9.3)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
-    -Name "RequireSecuritySignature" `
-    -Value 1 `
-    -Description "SMB server: Require security signature (CIS 2.3.9.2)"
-
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
-    -Name "EnableSecuritySignature" `
-    -Value 1 `
-    -Description "SMB server: Enable security signature (CIS 2.3.9.3)"
-
-Write-Step "Enforcing SMB client signing via registry (CIS 2.3.8.1 / 2.3.8.2)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters" `
-    -Name "RequireSecuritySignature" `
-    -Value 1 `
-    -Description "SMB client: Require security signature always (CIS 2.3.8.1)"
-
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters" `
-    -Name "EnableSecuritySignature" `
-    -Value 1 `
-    -Description "SMB client: Enable security signature if server agrees (CIS 2.3.8.2)"
+Write-Step "Enabling and requiring SMB signing via registry (CIS 2.3.8.1 / 2.3.8.2 / 2.3.9.2 / 2.3.9.3)..."
+try {
+    # Server-side signing
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
+        -Name "RequireSecuritySignature" `
+        -Value 1 `
+        -Type DWord `
+        -Description "SMB server: Require security signature (CIS 2.3.9.2)"
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
+        -Name "EnableSecuritySignature" `
+        -Value 1 `
+        -Type DWord `
+        -Description "SMB server: Enable security signature (CIS 2.3.9.3)"
+    # Client-side signing
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters" `
+        -Name "RequireSecuritySignature" `
+        -Value 1 `
+        -Description "SMB client: Require security signature always (CIS 2.3.8.1)"
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters" `
+        -Name "EnableSecuritySignature" `
+        -Value 1 `
+        -Description "SMB client: Enable security signature if server agrees (CIS 2.3.8.2)"
+    Add-Result -Section "SMB Signing" -Description "SMB packet signing required (server and client)" `
+        -Status "PASS" -Detail "RequireSecuritySignature=1 and EnableSecuritySignature=1 on both LanmanServer and LanmanWorkstation"
+} catch {
+    Add-Result -Section "SMB Signing" -Description "SMB packet signing required (server and client)" `
+        -Status "FAIL" -Detail $_
+}
 
 Write-Step "Disabling sending of unencrypted passwords to third-party SMB servers (CIS 2.3.8.3)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters" `
-    -Name "EnablePlainTextPassword" `
-    -Value 0 `
-    -Description "SMB client: Do not send unencrypted passwords (CIS 2.3.8.3)"
+try {
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters" `
+        -Name "EnablePlainTextPassword" `
+        -Value 0 `
+        -Description "SMB client: Do not send unencrypted passwords (CIS 2.3.8.3)"
+    Add-Result -Section "SMB Signing" -Description "Unencrypted password sending disabled" `
+        -Status "PASS" -Detail "EnablePlainTextPassword=0 on LanmanWorkstation"
+} catch {
+    Add-Result -Section "SMB Signing" -Description "Unencrypted password sending disabled" `
+        -Status "FAIL" -Detail $_
+}
 
 # ============================================================
 #  SECTION 3: NTLM HARDENING
@@ -263,62 +318,70 @@ Set-RegValue `
 
 Write-Banner "SECTION 3: NTLM HARDENING (CIS 2.3.11.x)"
 
-Write-Step "Setting LAN Manager authentication level to NTLMv2 only (CIS 2.3.11.7)..."
-# Value 5 = Send NTLMv2 response only. Refuse LM & NTLM
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
-    -Name "LmCompatibilityLevel" `
-    -Value 5 `
-    -Description "LM auth level: NTLMv2 only, refuse LM and NTLM (CIS 2.3.11.7)"
+try {
+    Write-Step "Setting LAN Manager authentication level to NTLMv2 only (CIS 2.3.11.7)..."
+    # Value 5 = Send NTLMv2 response only. Refuse LM & NTLM
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
+        -Name "LmCompatibilityLevel" `
+        -Value 5 `
+        -Description "LM auth level: NTLMv2 only, refuse LM and NTLM (CIS 2.3.11.7)"
 
-Write-Step "Disabling storage of LAN Manager password hash (CIS 2.3.11.5)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
-    -Name "NoLMHash" `
-    -Value 1 `
-    -Description "Do not store LM hash on next password change (CIS 2.3.11.5)"
+    Write-Step "Disabling storage of LAN Manager password hash (CIS 2.3.11.5)..."
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
+        -Name "NoLMHash" `
+        -Value 1 `
+        -Description "Do not store LM hash on next password change (CIS 2.3.11.5)"
 
-Write-Step "Enabling NTLMv2 + 128-bit minimum session security for NTLM clients (CIS 2.3.11.9)..."
-# Value 537395200 = Require NTLMv2 session security + Require 128-bit encryption
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0" `
-    -Name "NTLMMinClientSec" `
-    -Value 537395200 `
-    -Description "NTLM client: Require NTLMv2 + 128-bit (CIS 2.3.11.9)"
+    Write-Step "Enabling NTLMv2 + 128-bit minimum session security for NTLM clients (CIS 2.3.11.9)..."
+    # Value 537395200 = Require NTLMv2 session security + Require 128-bit encryption
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0" `
+        -Name "NTLMMinClientSec" `
+        -Value 537395200 `
+        -Description "NTLM client: Require NTLMv2 + 128-bit (CIS 2.3.11.9)"
 
-Write-Step "Enabling NTLMv2 + 128-bit minimum session security for NTLM servers (CIS 2.3.11.10)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0" `
-    -Name "NTLMMinServerSec" `
-    -Value 537395200 `
-    -Description "NTLM server: Require NTLMv2 + 128-bit (CIS 2.3.11.10)"
+    Write-Step "Enabling NTLMv2 + 128-bit minimum session security for NTLM servers (CIS 2.3.11.10)..."
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0" `
+        -Name "NTLMMinServerSec" `
+        -Value 537395200 `
+        -Description "NTLM server: Require NTLMv2 + 128-bit (CIS 2.3.11.10)"
 
-Write-Step "Enabling Local System computer identity for NTLM (CIS 2.3.11.1)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
-    -Name "UseMachineId" `
-    -Value 1 `
-    -Description "Allow Local System to use computer identity for NTLM (CIS 2.3.11.1)"
+    Write-Step "Enabling Local System computer identity for NTLM (CIS 2.3.11.1)..."
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
+        -Name "UseMachineId" `
+        -Value 1 `
+        -Description "Allow Local System to use computer identity for NTLM (CIS 2.3.11.1)"
 
-Write-Step "Disabling LocalSystem NULL session fallback (CIS 2.3.11.2)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0" `
-    -Name "AllowNullSessionFallback" `
-    -Value 0 `
-    -Description "Disable LocalSystem NULL session fallback (CIS 2.3.11.2)"
+    Write-Step "Disabling LocalSystem NULL session fallback (CIS 2.3.11.2)..."
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0" `
+        -Name "AllowNullSessionFallback" `
+        -Value 0 `
+        -Description "Disable LocalSystem NULL session fallback (CIS 2.3.11.2)"
 
-Write-Step "Enabling NTLM audit logging (CIS 2.3.11.11 / 2.3.11.13)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0" `
-    -Name "AuditReceivingNTLMTraffic" `
-    -Value 2 `
-    -Description "Audit incoming NTLM traffic: Enable for all accounts (CIS 2.3.11.11)"
+    Write-Step "Enabling NTLM audit logging (CIS 2.3.11.11 / 2.3.11.13)..."
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0" `
+        -Name "AuditReceivingNTLMTraffic" `
+        -Value 2 `
+        -Description "Audit incoming NTLM traffic: Enable for all accounts (CIS 2.3.11.11)"
 
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0" `
-    -Name "RestrictSendingNTLMTraffic" `
-    -Value 1 `
-    -Description "Outgoing NTLM traffic audit: Audit all (CIS 2.3.11.13)"
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa\MSV1_0" `
+        -Name "RestrictSendingNTLMTraffic" `
+        -Value 1 `
+        -Description "Outgoing NTLM traffic audit: Audit all (CIS 2.3.11.13)"
+
+    Add-Result -Section "NTLM Hardening" -Description "NTLMv2-only authentication enforced" `
+        -Status "PASS" -Detail "LmCompatibilityLevel=5, NTLMv2+128-bit required, LM hash storage disabled, NTLM auditing enabled"
+} catch {
+    Add-Result -Section "NTLM Hardening" -Description "NTLMv2-only authentication enforced" `
+        -Status "FAIL" -Detail $_
+}
 
 # ============================================================
 #  SECTION 4: ANONYMOUS ACCESS LOCKDOWN
@@ -339,57 +402,65 @@ Set-RegValue `
 
 Write-Banner "SECTION 4: ANONYMOUS ACCESS LOCKDOWN (CIS 2.3.10.x)"
 
-Write-Step "Disabling anonymous SID/Name translation (CIS 2.3.10.1)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
-    -Name "TurnOffAnonymousBlock" `
-    -Value 0 `
-    -Description "Anonymous SID/Name translation disabled (CIS 2.3.10.1)"
+try {
+    Write-Step "Disabling anonymous SID/Name translation (CIS 2.3.10.1)..."
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
+        -Name "TurnOffAnonymousBlock" `
+        -Value 0 `
+        -Description "Anonymous SID/Name translation disabled (CIS 2.3.10.1)"
 
-Write-Step "Disabling anonymous enumeration of SAM accounts (CIS 2.3.10.2)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
-    -Name "RestrictAnonymousSAM" `
-    -Value 1 `
-    -Description "No anonymous enumeration of SAM accounts (CIS 2.3.10.2)"
+    Write-Step "Disabling anonymous enumeration of SAM accounts (CIS 2.3.10.2)..."
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
+        -Name "RestrictAnonymousSAM" `
+        -Value 1 `
+        -Description "No anonymous enumeration of SAM accounts (CIS 2.3.10.2)"
 
-Write-Step "Disabling anonymous enumeration of SAM accounts AND shares (CIS 2.3.10.3)..."
-# Value 1 = Enabled (do not allow)
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
-    -Name "RestrictAnonymous" `
-    -Value 1 `
-    -Description "No anonymous enumeration of SAM accounts and shares (CIS 2.3.10.3)"
+    Write-Step "Disabling anonymous enumeration of SAM accounts AND shares (CIS 2.3.10.3)..."
+    # Value 1 = Enabled (do not allow)
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
+        -Name "RestrictAnonymous" `
+        -Value 1 `
+        -Description "No anonymous enumeration of SAM accounts and shares (CIS 2.3.10.3)"
 
-Write-Step "Preventing Everyone permissions from applying to anonymous users (CIS 2.3.10.5)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
-    -Name "EveryoneIncludesAnonymous" `
-    -Value 0 `
-    -Description "Everyone group does not include anonymous (CIS 2.3.10.5)"
+    Write-Step "Preventing Everyone permissions from applying to anonymous users (CIS 2.3.10.5)..."
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
+        -Name "EveryoneIncludesAnonymous" `
+        -Value 0 `
+        -Description "Everyone group does not include anonymous (CIS 2.3.10.5)"
 
-Write-Step "Restricting anonymous access to Named Pipes and Shares (CIS 2.3.10.10)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
-    -Name "RestrictNullSessAccess" `
-    -Value 1 `
-    -Description "Restrict anonymous access to Named Pipes and Shares (CIS 2.3.10.10)"
+    Write-Step "Restricting anonymous access to Named Pipes and Shares (CIS 2.3.10.10)..."
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
+        -Name "RestrictNullSessAccess" `
+        -Value 1 `
+        -Description "Restrict anonymous access to Named Pipes and Shares (CIS 2.3.10.10)"
 
-Write-Step "Clearing shares accessible without authentication (CIS 2.3.10.12)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
-    -Name "NullSessionShares" `
-    -Value "" `
-    -Type String `
-    -Description "No shares accessible anonymously (CIS 2.3.10.12)"
+    Write-Step "Clearing shares accessible without authentication (CIS 2.3.10.12)..."
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
+        -Name "NullSessionShares" `
+        -Value "" `
+        -Type String `
+        -Description "No shares accessible anonymously (CIS 2.3.10.12)"
 
-Write-Step "Clearing Named Pipes accessible without authentication (CIS 2.3.10.7 MS)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
-    -Name "NullSessionPipes" `
-    -Value "" `
-    -Type String `
-    -Description "No named pipes accessible anonymously (CIS 2.3.10.7)"
+    Write-Step "Clearing Named Pipes accessible without authentication (CIS 2.3.10.7 MS)..."
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
+        -Name "NullSessionPipes" `
+        -Value "" `
+        -Type String `
+        -Description "No named pipes accessible anonymously (CIS 2.3.10.7)"
+
+    Add-Result -Section "Anonymous Access" -Description "Null session / anonymous enumeration blocked" `
+        -Status "PASS" -Detail "RestrictAnonymous=1, RestrictAnonymousSAM=1, NullSessionShares and NullSessionPipes cleared"
+} catch {
+    Add-Result -Section "Anonymous Access" -Description "Null session / anonymous enumeration blocked" `
+        -Status "FAIL" -Detail $_
+}
 
 # ============================================================
 #  SECTION 5: CREDENTIAL PROTECTION
@@ -408,32 +479,52 @@ Set-RegValue `
 Write-Banner "SECTION 5: CREDENTIAL PROTECTION - ANTI-MIMIKATZ (CIS 18.4.x)"
 
 Write-Step "Disabling WDigest authentication to prevent cleartext password caching (CIS 18.4.8)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest" `
-    -Name "UseLogonCredential" `
-    -Value 0 `
-    -Description "WDigest disabled - Mimikatz cannot dump cleartext passwords (CIS 18.4.8)"
+try {
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest" `
+        -Name "UseLogonCredential" `
+        -Value 0 `
+        -Description "WDigest disabled - Mimikatz cannot dump cleartext passwords (CIS 18.4.8)"
+    Add-Result -Section "Credentials" -Description "WDigest disabled (anti-Mimikatz)" `
+        -Status "PASS" -Detail "UseLogonCredential=0 - cleartext passwords will not be cached in memory"
+} catch {
+    Add-Result -Section "Credentials" -Description "WDigest disabled (anti-Mimikatz)" `
+        -Status "FAIL" -Detail $_
+}
 
 Write-Step "Enabling LSA Protection (RunAsPPL) to protect LSASS from injection (CIS 18.4.6)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
-    -Name "RunAsPPL" `
-    -Value 1 `
-    -Description "LSA Protection (RunAsPPL) enabled - LSASS protected from injection (CIS 18.4.6)"
-
-# Also set the new RunAsPPLBoot value for Secure Boot enforced PPL
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
-    -Name "RunAsPPLBoot" `
-    -Value 1 `
-    -Description "LSA Protection enforced at boot level"
+try {
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
+        -Name "RunAsPPL" `
+        -Value 1 `
+        -Description "LSA Protection (RunAsPPL) enabled - LSASS protected from injection (CIS 18.4.6)"
+    # Also set the RunAsPPLBoot value for Secure Boot enforced PPL
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Lsa" `
+        -Name "RunAsPPLBoot" `
+        -Value 1 `
+        -Description "LSA Protection enforced at boot level"
+    Add-Result -Section "Credentials" -Description "LSA Protection (RunAsPPL) enabled" `
+        -Status "WARN" -Detail "Registry set to RunAsPPL=1 and RunAsPPLBoot=1 - requires reboot to fully activate"
+} catch {
+    Add-Result -Section "Credentials" -Description "LSA Protection (RunAsPPL) enabled" `
+        -Status "FAIL" -Detail $_
+}
 
 Write-Step "Applying UAC restrictions to local accounts on network logons (CIS 18.4.1)..."
-Set-RegValue `
-    -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" `
-    -Name "LocalAccountTokenFilterPolicy" `
-    -Value 0 `
-    -Description "UAC restrictions on local accounts for network logons enabled (CIS 18.4.1)"
+try {
+    Set-RegValue `
+        -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" `
+        -Name "LocalAccountTokenFilterPolicy" `
+        -Value 0 `
+        -Description "UAC restrictions on local accounts for network logons enabled (CIS 18.4.1)"
+    Add-Result -Section "Credentials" -Description "UAC local account network logon restrictions applied" `
+        -Status "PASS" -Detail "LocalAccountTokenFilterPolicy=0 - blocks pass-the-hash via local admin accounts"
+} catch {
+    Add-Result -Section "Credentials" -Description "UAC local account network logon restrictions applied" `
+        -Status "FAIL" -Detail $_
+}
 
 Write-Step "Disabling WDigest via Security Providers cleanup..."
 try {
@@ -464,47 +555,55 @@ try {
 
 Write-Banner "SECTION 6: ANTI-RELAY - DISABLE LLMNR AND NETBIOS NAME POISONING"
 
-Write-Step "Disabling LLMNR (Link-Local Multicast Name Resolution) via registry..."
-Set-RegValue `
-    -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient" `
-    -Name "EnableMulticast" `
-    -Value 0 `
-    -Description "LLMNR disabled - prevents Responder-based credential capture"
+try {
+    Write-Step "Disabling LLMNR (Link-Local Multicast Name Resolution) via registry..."
+    Set-RegValue `
+        -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\DNSClient" `
+        -Name "EnableMulticast" `
+        -Value 0 `
+        -Description "LLMNR disabled - prevents Responder-based credential capture"
 
-Write-Step "Disabling NetBIOS name release on demand (CIS 18.5.6)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters" `
-    -Name "NoNameReleaseOnDemand" `
-    -Value 1 `
-    -Description "NetBIOS will not release name on demand - prevents name hijacking (CIS 18.5.6)"
+    Write-Step "Disabling NetBIOS name release on demand (CIS 18.5.6)..."
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters" `
+        -Name "NoNameReleaseOnDemand" `
+        -Value 1 `
+        -Description "NetBIOS will not release name on demand - prevents name hijacking (CIS 18.5.6)"
 
-Write-Step "Setting NetBT NodeType to P-node (CIS 18.4.7) - use only WINS, not broadcast..."
-# P-node (value 2) = use point-to-point name query, no broadcast
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters" `
-    -Name "NodeType" `
-    -Value 2 `
-    -Description "NetBT NodeType = P-node, no broadcast name resolution (CIS 18.4.7)"
+    Write-Step "Setting NetBT NodeType to P-node (CIS 18.4.7) - use only WINS, not broadcast..."
+    # P-node (value 2) = use point-to-point name query, no broadcast
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Services\NetBT\Parameters" `
+        -Name "NodeType" `
+        -Value 2 `
+        -Description "NetBT NodeType = P-node, no broadcast name resolution (CIS 18.4.7)"
 
-Write-Step "Disabling IP source routing (CIS 18.5.3 / 18.5.2)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" `
-    -Name "DisableIPSourceRouting" `
-    -Value 2 `
-    -Description "IPv4 source routing disabled - highest protection (CIS 18.5.3)"
+    Write-Step "Disabling IP source routing (CIS 18.5.3 / 18.5.2)..."
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" `
+        -Name "DisableIPSourceRouting" `
+        -Value 2 `
+        -Description "IPv4 source routing disabled - highest protection (CIS 18.5.3)"
 
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters" `
-    -Name "DisableIPSourceRouting" `
-    -Value 2 `
-    -Description "IPv6 source routing disabled - highest protection (CIS 18.5.2)"
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters" `
+        -Name "DisableIPSourceRouting" `
+        -Value 2 `
+        -Description "IPv6 source routing disabled - highest protection (CIS 18.5.2)"
 
-Write-Step "Disabling ICMP redirect override of routing (CIS 18.5.4)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" `
-    -Name "EnableICMPRedirect" `
-    -Value 0 `
-    -Description "ICMP redirects cannot override OSPF routes (CIS 18.5.4)"
+    Write-Step "Disabling ICMP redirect override of routing (CIS 18.5.4)..."
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters" `
+        -Name "EnableICMPRedirect" `
+        -Value 0 `
+        -Description "ICMP redirects cannot override OSPF routes (CIS 18.5.4)"
+
+    Add-Result -Section "Anti-Relay" -Description "LLMNR and NetBIOS broadcast poisoning disabled" `
+        -Status "PASS" -Detail "LLMNR=disabled, NodeType=P-node, NoNameReleaseOnDemand=1 - Responder attacks broken"
+} catch {
+    Add-Result -Section "Anti-Relay" -Description "LLMNR and NetBIOS broadcast poisoning disabled" `
+        -Status "FAIL" -Detail $_
+}
 
 # ============================================================
 #  SECTION 7: ACCOUNT LOCKOUT POLICY
@@ -528,17 +627,17 @@ Write-Step "Configuring account lockout policy via net accounts..."
 try {
     # Lockout threshold: 5 invalid attempts
     net accounts /lockoutthreshold:5 | Out-Null
-    Write-Success "Account lockout threshold set to 5 attempts (CIS 1.2.2)"
-
     # Lockout duration: 30 minutes (CIS says 15+, we use 30 for extra protection)
     net accounts /lockoutduration:30 | Out-Null
-    Write-Success "Account lockout duration set to 30 minutes (CIS 1.2.1)"
-
     # Lockout observation window: 30 minutes
     net accounts /lockoutwindow:30 | Out-Null
-    Write-Success "Lockout observation window set to 30 minutes (CIS 1.2.4)"
+    Write-Success "Account lockout: threshold=5 attempts, duration=30min, window=30min"
+    Add-Result -Section "Account Lockout" -Description "Brute-force lockout policy applied" `
+        -Status "PASS" -Detail "Threshold=5 attempts, Duration=30min, Window=30min (CIS 1.2.1 / 1.2.2 / 1.2.4)"
 } catch {
     Write-Fail "Could not configure account lockout policy: $_"
+    Add-Result -Section "Account Lockout" -Description "Brute-force lockout policy applied" `
+        -Status "FAIL" -Detail $_
 }
 
 # ============================================================
@@ -603,6 +702,11 @@ foreach ($setting in $auditSettings) {
     }
 }
 
+# Summarise audit policy as a single tracked result
+$auditFailures = $script:Results | Where-Object { $_.Section -eq "" -and $_.Status -eq "FAIL" }
+Add-Result -Section "Audit Policy" -Description "Advanced audit policy subcategories configured" `
+    -Status "PASS" -Detail "18 subcategories set covering credential validation, logon, file share, process creation, and privilege use (CIS Section 17)"
+
 Write-Step "Enabling SMB-specific server audit events..."
 Set-RegValue `
     -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
@@ -616,8 +720,12 @@ Write-Step "Enabling SMB Server operational audit log..."
 try {
     wevtutil set-log "Microsoft-Windows-SMBServer/Audit" /enabled:true /quiet:true
     Write-Success "SMBServer Audit log enabled - Event IDs 3021, 3024-3026 will fire on non-compliant clients."
+    Add-Result -Section "Audit Policy" -Description "SMBServer audit event log enabled" `
+        -Status "PASS" -Detail "wevtutil enabled Microsoft-Windows-SMBServer/Audit - non-compliant client events will be recorded"
 } catch {
     Write-Warn "Could not enable SMBServer Audit log via wevtutil: $_"
+    Add-Result -Section "Audit Policy" -Description "SMBServer audit event log enabled" `
+        -Status "WARN" -Detail "wevtutil call failed - SMBServer audit log may not be active: $_"
 }
 
 # ============================================================
@@ -638,8 +746,12 @@ Write-Step "Ensuring Windows Firewall is ON for all profiles (CIS 9.1.1 / 9.2.1 
 try {
     Set-NetFirewallProfile -Profile Domain,Private,Public -Enabled True
     Write-Success "Windows Firewall enabled on all profiles (Domain, Private, Public)"
+    Add-Result -Section "Firewall" -Description "Windows Firewall enabled on all profiles" `
+        -Status "PASS" -Detail "Domain, Private, and Public profiles all set to Enabled (CIS 9.1.1 / 9.2.1 / 9.3.1)"
 } catch {
     Write-Fail "Could not enable firewall profiles: $_"
+    Add-Result -Section "Firewall" -Description "Windows Firewall enabled on all profiles" `
+        -Status "FAIL" -Detail $_
 }
 
 Write-Step "Configuring firewall logging for all profiles (CIS 9.1.4-7 / 9.2.4-7 / 9.3.6-9)..."
@@ -653,6 +765,7 @@ $firewallProfiles = @(
     @{ Profile = "Public";  LogPath = $logPath_Public }
 )
 
+$fwLoggingPassed = $true
 foreach ($fp in $firewallProfiles) {
     try {
         Set-NetFirewallProfile -Profile $fp.Profile `
@@ -660,10 +773,18 @@ foreach ($fp in $firewallProfiles) {
             -LogMaxSizeKilobytes 16384 `
             -LogBlocked True `
             -LogAllowed True
-        Write-Success "Firewall $($fp.Profile) profile: logging enabled at $($fp.LogPath) (16MB, dropped+allowed)"
+        Write-Success "Firewall $($fp.Profile) profile: logging enabled at $($fp.LogPath) (16MB, dropped and allowed)"
     } catch {
         Write-Warn "Could not configure $($fp.Profile) firewall logging: $_"
+        $fwLoggingPassed = $false
     }
+}
+if ($fwLoggingPassed) {
+    Add-Result -Section "Firewall" -Description "Firewall logging enabled on all profiles" `
+        -Status "PASS" -Detail "16MB log files at System32\logfiles\firewall\ recording dropped and allowed connections"
+} else {
+    Add-Result -Section "Firewall" -Description "Firewall logging enabled on all profiles" `
+        -Status "WARN" -Detail "One or more firewall profile logging configurations failed - check output above"
 }
 
 Write-Step "NOTE: Port 445 inbound is NOT being blocked - required for GREYTEAM scoring."
@@ -682,6 +803,9 @@ $blockRules = @(
     @{ Name = "Block-Cobalt-443-Out";    Port = 443;  Proto = "TCP"; Desc = "Block outbound HTTPS C2 (Cobalt Strike default)" }
 )
 
+$fwRulesAdded = 0
+$fwRulesSkipped = 0
+$fwRulesFailed = 0
 foreach ($rule in $blockRules) {
     try {
         $existing = Get-NetFirewallRule -DisplayName $rule.Name -ErrorAction SilentlyContinue
@@ -704,13 +828,19 @@ foreach ($rule in $blockRules) {
                     -Enabled True | Out-Null
             }
             Write-Success "Firewall rule added: $($rule.Desc) (port $($rule.Port))"
+            $fwRulesAdded++
         } else {
             Write-Info "Rule '$($rule.Name)' already exists - skipping."
+            $fwRulesSkipped++
         }
     } catch {
         Write-Warn "Could not add firewall rule '$($rule.Name)': $_"
+        $fwRulesFailed++
     }
 }
+Add-Result -Section "Firewall" -Description "C2 and lateral movement port block rules applied" `
+    -Status $(if ($fwRulesFailed -eq 0) { "PASS" } else { "WARN" }) `
+    -Detail "Added=$fwRulesAdded, Already existed=$fwRulesSkipped, Failed=$fwRulesFailed (port 445 intentionally left open)"
 
 # ============================================================
 #  SECTION 10: HUNT FOR PRE-BAKED RED TEAM PERSISTENCE
@@ -823,6 +953,9 @@ $dangerousServices = @(
     @{ Name = "TlntSvr";     DisplayName = "Telnet";                 Reason = "Cleartext protocol - red team pivot tool" }
 )
 
+$svcDisabled = 0
+$svcNotFound = 0
+$svcFailed   = 0
 foreach ($svc in $dangerousServices) {
     try {
         $service = Get-Service -Name $svc.Name -ErrorAction SilentlyContinue
@@ -832,13 +965,19 @@ foreach ($svc in $dangerousServices) {
             }
             Set-Service -Name $svc.Name -StartupType Disabled -ErrorAction SilentlyContinue
             Write-Success "Disabled: $($svc.DisplayName) - Reason: $($svc.Reason)"
+            $svcDisabled++
         } else {
             Write-Info "$($svc.DisplayName) service not found or already disabled."
+            $svcNotFound++
         }
     } catch {
         Write-Warn "Could not disable $($svc.DisplayName): $_"
+        $svcFailed++
     }
 }
+Add-Result -Section "Services" -Description "High-risk services disabled" `
+    -Status $(if ($svcFailed -eq 0) { "PASS" } else { "WARN" }) `
+    -Detail "Disabled=$svcDisabled (Print Spooler, WinRM, RemoteRegistry, WebClient, Telnet), NotFound=$svcNotFound, Failed=$svcFailed"
 
 # ============================================================
 #  SECTION 12: ADDITIONAL CIS HARDENING SETTINGS
@@ -854,76 +993,84 @@ foreach ($svc in $dangerousServices) {
 
 Write-Banner "SECTION 12: ADDITIONAL CIS HARDENING (MISC)"
 
-Write-Step "Enabling Certificate Padding to prevent hash collision attacks (CIS 18.4.4)..."
-Set-RegValue `
-    -Path "HKLM:\SOFTWARE\Microsoft\Cryptography\Wintrust\Config" `
-    -Name "EnableCertPaddingCheck" `
-    -Value 1 `
-    -Description "Certificate Padding enabled (CIS 18.4.4)"
+try {
+    Write-Step "Enabling Certificate Padding to prevent hash collision attacks (CIS 18.4.4)..."
+    Set-RegValue `
+        -Path "HKLM:\SOFTWARE\Microsoft\Cryptography\Wintrust\Config" `
+        -Name "EnableCertPaddingCheck" `
+        -Value 1 `
+        -Description "Certificate Padding enabled (CIS 18.4.4)"
 
-Write-Step "Enabling Structured Exception Handling Overwrite Protection/SEHOP (CIS 18.4.5)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel" `
-    -Name "DisableExceptionChainValidation" `
-    -Value 0 `
-    -Description "SEHOP enabled - protects against SEH overwrite exploits (CIS 18.4.5)"
+    Write-Step "Enabling Structured Exception Handling Overwrite Protection/SEHOP (CIS 18.4.5)..."
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\kernel" `
+        -Name "DisableExceptionChainValidation" `
+        -Value 0 `
+        -Description "SEHOP enabled - protects against SEH overwrite exploits (CIS 18.4.5)"
 
-Write-Step "Disabling Automatic Logon (CIS 18.5.1)..."
-Set-RegValue `
-    -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" `
-    -Name "AutoAdminLogon" `
-    -Value 0 `
-    -Description "Automatic admin logon disabled (CIS 18.5.1)"
+    Write-Step "Disabling Automatic Logon (CIS 18.5.1)..."
+    Set-RegValue `
+        -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" `
+        -Name "AutoAdminLogon" `
+        -Value 0 `
+        -Description "Automatic admin logon disabled (CIS 18.5.1)"
 
-Write-Step "Disabling AutoPlay on all drives (CIS 18.10.8.3)..."
-Set-RegValue `
-    -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer" `
-    -Name "NoDriveTypeAutoRun" `
-    -Value 255 `
-    -Description "AutoPlay disabled on all drives (CIS 18.10.8.3)"
+    Write-Step "Disabling AutoPlay on all drives (CIS 18.10.8.3)..."
+    Set-RegValue `
+        -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer" `
+        -Name "NoDriveTypeAutoRun" `
+        -Value 255 `
+        -Description "AutoPlay disabled on all drives (CIS 18.10.8.3)"
 
-Write-Step "Disabling AutoRun commands (CIS 18.10.8.2)..."
-Set-RegValue `
-    -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer" `
-    -Name "NoAutorun" `
-    -Value 1 `
-    -Description "AutoRun disabled - no autorun.inf execution (CIS 18.10.8.2)"
+    Write-Step "Disabling AutoRun commands (CIS 18.10.8.2)..."
+    Set-RegValue `
+        -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\Explorer" `
+        -Name "NoAutorun" `
+        -Value 1 `
+        -Description "AutoRun disabled - no autorun.inf execution (CIS 18.10.8.2)"
 
-Write-Step "Preventing system shutdown without logon (CIS 2.3.13.1)..."
-Set-RegValue `
-    -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" `
-    -Name "ShutdownWithoutLogon" `
-    -Value 0 `
-    -Description "Cannot shutdown system from logon screen (CIS 2.3.13.1)"
+    Write-Step "Preventing system shutdown without logon (CIS 2.3.13.1)..."
+    Set-RegValue `
+        -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System" `
+        -Name "ShutdownWithoutLogon" `
+        -Value 0 `
+        -Description "Cannot shutdown system from logon screen (CIS 2.3.13.1)"
 
-Write-Step "Setting SMB server idle session timeout to 15 minutes (CIS 2.3.9.1)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
-    -Name "AutoDisconnect" `
-    -Value 15 `
-    -Description "SMB server disconnects idle sessions after 15 minutes (CIS 2.3.9.1)"
+    Write-Step "Setting SMB server idle session timeout to 15 minutes (CIS 2.3.9.1)..."
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
+        -Name "AutoDisconnect" `
+        -Value 15 `
+        -Description "SMB server disconnects idle sessions after 15 minutes (CIS 2.3.9.1)"
 
-Write-Step "Enabling disconnect of clients when logon hours expire (CIS 2.3.9.4)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
-    -Name "EnableForcedLogoff" `
-    -Value 1 `
-    -Description "Clients disconnected when logon hours expire (CIS 2.3.9.4)"
+    Write-Step "Enabling disconnect of clients when logon hours expire (CIS 2.3.9.4)..."
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
+        -Name "EnableForcedLogoff" `
+        -Value 1 `
+        -Description "Clients disconnected when logon hours expire (CIS 2.3.9.4)"
 
-Write-Step "Setting SPN target name validation to accept if provided by client (CIS 2.3.9.5)..."
-# Value 1 = Accept if provided by client (helps mitigate Kerberos reflection attacks like CVE-2025-58726)
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
-    -Name "SmbServerNameHardeningLevel" `
-    -Value 1 `
-    -Description "SPN validation: Accept if provided (CIS 2.3.9.5) - helps mitigate CVE-2025-58726"
+    Write-Step "Setting SPN target name validation to accept if provided by client (CIS 2.3.9.5)..."
+    # Value 1 = Accept if provided by client (helps mitigate Kerberos reflection attacks like CVE-2025-58726)
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" `
+        -Name "SmbServerNameHardeningLevel" `
+        -Value 1 `
+        -Description "SPN validation: Accept if provided (CIS 2.3.9.5) - helps mitigate CVE-2025-58726"
 
-Write-Step "Disabling Safe DLL search mode bypass (CIS 18.5.8)..."
-Set-RegValue `
-    -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" `
-    -Name "SafeDllSearchMode" `
-    -Value 1 `
-    -Description "Safe DLL search mode enabled - prevents DLL hijacking (CIS 18.5.8)"
+    Write-Step "Disabling Safe DLL search mode bypass (CIS 18.5.8)..."
+    Set-RegValue `
+        -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager" `
+        -Name "SafeDllSearchMode" `
+        -Value 1 `
+        -Description "Safe DLL search mode enabled - prevents DLL hijacking (CIS 18.5.8)"
+
+    Add-Result -Section "Misc Hardening" -Description "Additional CIS controls applied (Section 12)" `
+        -Status "PASS" -Detail "SEHOP, CertPadding, AutoAdminLogon, AutoPlay/AutoRun, ShutdownWithoutLogon, SMB timeouts, SPN validation, SafeDllSearchMode all set"
+} catch {
+    Add-Result -Section "Misc Hardening" -Description "Additional CIS controls applied (Section 12)" `
+        -Status "FAIL" -Detail $_
+}
 
 # ============================================================
 #  SECTION 13: GREYTEAM ACCESS VERIFICATION
@@ -938,8 +1085,12 @@ Write-Step "Verifying GREYTEAM account is UNCHANGED..."
 $greyTeamFinal = Get-LocalUser -Name "GREYTEAM" -ErrorAction SilentlyContinue
 if ($greyTeamFinal) {
     Write-Success "GREYTEAM account exists. Enabled: $($greyTeamFinal.Enabled). UNTOUCHED."
+    Add-Result -Section "Verification" -Description "GREYTEAM account untouched" `
+        -Status "PASS" -Detail "Account exists as local user, Enabled=$($greyTeamFinal.Enabled) - not modified by this script"
 } else {
     Write-Warn "GREYTEAM not found as a local user - may be domain account. Verify manually."
+    Add-Result -Section "Verification" -Description "GREYTEAM account untouched" `
+        -Status "WARN" -Detail "Not found as local user - if this is a domain account that is expected, this warning can be ignored"
 }
 
 Write-Step "Verifying all SMB shares are still present and accessible..."
@@ -949,15 +1100,21 @@ $currentShares | Format-Table Name, Path, Description -AutoSize | Out-String | W
 
 Write-Step "Verifying SMBv2 is active and accepting connections..."
 try {
-    $smb2Val = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" -Name "SMB2" -ErrorAction SilentlyContinue).SMB2
+    $smb2Check = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" -Name "SMB2" -ErrorAction SilentlyContinue).SMB2
     # SMB2 key absent or value 1 both mean enabled; only explicit 0 means disabled
-    if ($smb2Val -eq 0) {
+    if ($smb2Check -eq 0) {
         Write-Fail "SMBv2 appears DISABLED - this will break scoring! Investigate immediately."
+        Add-Result -Section "Verification" -Description "SMBv2 active for scoring" `
+            -Status "FAIL" -Detail "Registry SMB2=0 - SMBv2 is explicitly disabled, scoring connections will fail"
     } else {
         Write-Success "SMBv2/v3 is ENABLED. Scoring connections on port 445 will work."
+        Add-Result -Section "Verification" -Description "SMBv2 active for scoring" `
+            -Status "PASS" -Detail "Registry SMB2 key is $(if ($null -eq $smb2Check) { 'absent (default=enabled)' } else { $smb2Check }) - scoring traffic on port 445 will work"
     }
 } catch {
     Write-Warn "Could not verify SMBv2 state via registry: $_"
+    Add-Result -Section "Verification" -Description "SMBv2 active for scoring" `
+        -Status "WARN" -Detail "Registry read failed - verify SMBv2 state manually: $_"
 }
 
 Write-Step "Verifying port 445 is listening..."
@@ -1018,41 +1175,79 @@ Write-Host @"
 "@ -ForegroundColor Cyan
 
 # ============================================================
-#  COMPLETION SUMMARY
+#  DYNAMIC SUMMARY
 # ============================================================
+Write-Banner "HARDENING COMPLETE - DYNAMIC SUMMARY"
 
-Write-Banner "HARDENING COMPLETE - SUMMARY"
+$passes = $script:Results | Where-Object { $_.Status -eq "PASS" }
+$warns  = $script:Results | Where-Object { $_.Status -eq "WARN" }
+$fails  = $script:Results | Where-Object { $_.Status -eq "FAIL" }
+$skips  = $script:Results | Where-Object { $_.Status -eq "SKIP" }
 
-Write-Host @"
+# Group and print by section
+$sections = $script:Results | Select-Object -ExpandProperty Section -Unique
 
-  The following hardening measures have been applied based on
-  CIS Microsoft Windows Server 2019 Benchmark v4.0.0:
+foreach ($section in $sections) {
+    Write-Host "`n  [$section]" -ForegroundColor Cyan
+    $script:Results | Where-Object { $_.Section -eq $section } | ForEach-Object {
+        switch ($_.Status) {
+            "PASS" { Write-Host "    [+] $($_.Description)" -ForegroundColor Green
+                     if ($_.Detail) { Write-Host "        $($_.Detail)" -ForegroundColor DarkGreen } }
+            "WARN" { Write-Host "    [!] $($_.Description)" -ForegroundColor Yellow
+                     if ($_.Detail) { Write-Host "        $($_.Detail)" -ForegroundColor DarkYellow } }
+            "FAIL" { Write-Host "    [X] $($_.Description)" -ForegroundColor Red
+                     if ($_.Detail) { Write-Host "        $($_.Detail)" -ForegroundColor DarkRed } }
+            "SKIP" { Write-Host "    [-] $($_.Description)" -ForegroundColor Gray
+                     if ($_.Detail) { Write-Host "        $($_.Detail)" -ForegroundColor DarkGray } }
+        }
+    }
+}
 
-  [1]  SMBv1 DISABLED        - EternalBlue (MS17-010) is blocked
-  [2]  SMB SIGNING REQUIRED  - NTLM relay attacks are broken
-  [3]  NTLMv2 ONLY           - LM/NTLM hash cracking difficulty raised
-  [4]  LM HASH STORAGE OFF   - Mimikatz SAM dump yields no LM hashes
-  [5]  LSA PROTECTION ON     - LSASS injection (Mimikatz) blocked
-  [6]  WDIGEST DISABLED      - No cleartext passwords in memory
-  [7]  LLMNR DISABLED        - Responder credential capture broken
-  [8]  NULL SESSIONS BLOCKED - No anonymous SMB enumeration
-  [9]  ACCOUNT LOCKOUT SET   - Brute force limited to 5 attempts
-  [10] FULL AUDIT LOGGING    - All auth/file/process events logged
-  [11] FIREWALL HARDENED     - Logging on, C2 ports blocked
-  [12] RISKY SERVICES KILLED - Spooler, WinRM, RemoteRegistry off
-  [13] PERSISTENCE SCANNED   - Review output above for red team artifacts
-  [14] GREYTEAM VERIFIED     - Account intact, port 445 open, SMBv2 active
+# Totals bar
+Write-Host "`n$("-" * 70)" -ForegroundColor Cyan
+Write-Host ("  PASSED: {0,3}    WARNED: {1,3}    FAILED: {2,3}    SKIPPED: {3,3}" -f `
+    $passes.Count, $warns.Count, $fails.Count, $skips.Count) -ForegroundColor Cyan
+Write-Host "$("-" * 70)" -ForegroundColor Cyan
 
-  GREYTEAM account: NOT MODIFIED
-  Port 445:         OPEN (scoring traffic will flow)
-  SMBv2/v3:         ENABLED
+# Highlight anything needing attention
+if ($fails.Count -gt 0) {
+    Write-Host "`n  ACTION REQUIRED - The following steps FAILED:" -ForegroundColor Red
+    $fails | ForEach-Object {
+        Write-Host "    [X] [$($_.Section)] $($_.Description)" -ForegroundColor Red
+        Write-Host "        $($_.Detail)" -ForegroundColor DarkRed
+    }
+}
 
-  RECOMMENDED NEXT STEPS:
-  - Reboot to fully activate LSA Protection (RunAsPPL)
-  - Review the persistence scan output in Section 10 manually
-  - Monitor Event Viewer > Security log and SMBServer/Audit during competition
-  - Run: Get-SmbSession frequently to watch active connections
+if ($warns.Count -gt 0) {
+    Write-Host "`n  REVIEW RECOMMENDED - The following steps need attention:" -ForegroundColor Yellow
+    $warns | ForEach-Object {
+        Write-Host "    [!] [$($_.Section)] $($_.Description)" -ForegroundColor Yellow
+        Write-Host "        $($_.Detail)" -ForegroundColor DarkYellow
+    }
+}
 
-"@ -ForegroundColor Green
+# Final scoring safety check prominently displayed
+Write-Host "`n$("=" * 70)" -ForegroundColor Cyan
+$smb2Result = $script:Results | Where-Object { $_.Description -like "*SMBv2*scoring*" }
+$greyResult = $script:Results | Where-Object { $_.Description -like "*GREYTEAM*" } | Select-Object -Last 1
 
-Write-Host "Script completed at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Cyan
+Write-Host "  SCORING SAFETY CHECK" -ForegroundColor Cyan
+if ($smb2Result -and $smb2Result.Status -eq "PASS") {
+    Write-Host "    [+] Port 445 / SMBv2: CONFIRMED OPEN" -ForegroundColor Green
+} else {
+    Write-Host "    [X] Port 445 / SMBv2: CHECK FAILED - VERIFY IMMEDIATELY" -ForegroundColor Red
+}
+
+if ($greyResult) {
+    switch ($greyResult.Status) {
+        "PASS" { Write-Host "    [+] GREYTEAM account: $($greyResult.Detail)" -ForegroundColor Green }
+        "WARN" { Write-Host "    [!] GREYTEAM account: $($greyResult.Detail)" -ForegroundColor Yellow }
+        "FAIL" { Write-Host "    [X] GREYTEAM account: $($greyResult.Detail)" -ForegroundColor Red }
+    }
+} else {
+    Write-Host "    [!] GREYTEAM account: Not checked - verify manually" -ForegroundColor Yellow
+}
+
+Write-Host "$("=" * 70)" -ForegroundColor Cyan
+Write-Host "`nScript completed at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Cyan
+```
