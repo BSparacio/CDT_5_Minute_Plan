@@ -940,11 +940,16 @@ Write-Info "Current SMB shares after hardening:"
 $currentShares | Format-Table Name, Path, Description -AutoSize | Out-String | Write-Host
 
 Write-Step "Verifying SMBv2 is active and accepting connections..."
-$finalConfig = Get-SmbServerConfiguration
-if ($finalConfig.EnableSMB2Protocol) {
-    Write-Success "SMBv2/v3 is ENABLED. Scoring connections on port 445 will work."
-} else {
-    Write-Fail "SMBv2 appears DISABLED - this will break scoring! Investigate immediately."
+try {
+    $smb2Val = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" -Name "SMB2" -ErrorAction SilentlyContinue).SMB2
+    # SMB2 key absent or value 1 both mean enabled; only explicit 0 means disabled
+    if ($smb2Val -eq 0) {
+        Write-Fail "SMBv2 appears DISABLED - this will break scoring! Investigate immediately."
+    } else {
+        Write-Success "SMBv2/v3 is ENABLED. Scoring connections on port 445 will work."
+    }
+} catch {
+    Write-Warn "Could not verify SMBv2 state via registry: $_"
 }
 
 Write-Step "Verifying port 445 is listening..."
@@ -957,11 +962,18 @@ if ($port445) {
 }
 
 Write-Step "Verifying SMB signing is correctly enabled..."
-$signingCheck = Get-SmbServerConfiguration | Select-Object EnableSecuritySignature, RequireSecuritySignature
-if ($signingCheck.RequireSecuritySignature) {
-    Write-Success "SMB signing is REQUIRED. NTLM relay attacks are blocked."
-} else {
-    Write-Warn "SMB signing require is not active. Re-check Section 2."
+try {
+    $requireSigning = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" -Name "RequireSecuritySignature" -ErrorAction SilentlyContinue).RequireSecuritySignature
+    $enableSigning  = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters" -Name "EnableSecuritySignature"  -ErrorAction SilentlyContinue).EnableSecuritySignature
+    if ($requireSigning -eq 1) {
+        Write-Success "SMB signing is REQUIRED. NTLM relay attacks are blocked."
+    } elseif ($enableSigning -eq 1) {
+        Write-Warn "SMB signing is enabled but not required - relay attacks may still be possible. Re-check Section 2."
+    } else {
+        Write-Warn "SMB signing is not active. Re-check Section 2."
+    }
+} catch {
+    Write-Warn "Could not verify SMB signing state via registry: $_"
 }
 
 # ============================================================
