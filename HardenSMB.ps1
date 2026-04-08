@@ -792,6 +792,8 @@ Write-Info "SMB traffic on port 445 will remain fully open per competition rules
 
 Write-Step "Blocking common red-team C2 and lateral movement ports (NOT 445)..."
 $blockRules = @(
+    @{ Name = "Block-SSH-Inbound";       Port = 22;   Proto = "TCP"; Desc = "Block SSH (Remote Admin limit)" }
+    @{ Name = "Block-FTP-Inbound";       Port = 21;   Proto = "TCP"; Desc = "Block FTP (Cleartext transfer)" }
     @{ Name = "Block-Telnet-Inbound";    Port = 23;   Proto = "TCP"; Desc = "Block Telnet (common C2 fallback)" }
     @{ Name = "Block-RPC-Inbound";       Port = 135;  Proto = "TCP"; Desc = "Block RPC endpoint mapper (pivot risk)" }
     @{ Name = "Block-NetBIOS-NS";        Port = 137;  Proto = "UDP"; Desc = "Block NetBIOS Name Service (LLMNR/relay enabler)" }
@@ -1250,4 +1252,3 @@ if ($greyResult) {
 
 Write-Host "$("=" * 70)" -ForegroundColor Cyan
 Write-Host "`nScript completed at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Cyan
-```
